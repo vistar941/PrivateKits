@@ -313,8 +313,8 @@ public class Rendition: Hashable {
         let rendition = namedLookup.rendition
         self.cuiRend = rendition
         self.namedLookup = namedLookup
-        self.type = .init(namedLookup: namedLookup)
         self.namedGradient = namedGradient
+        self.type = namedGradient == nil ? .init(namedLookup: namedLookup) : .namedGradient
         
         self.name = type == .icon ? cuiRend.name() : namedLookup.name
     }
@@ -497,6 +497,7 @@ public enum RenditionType: Int, Codable, Hashable, CustomStringConvertible, Case
     case pdf
     case color
     case svg
+    case namedGradient
     case rawData
     case unknown
     
@@ -548,6 +549,8 @@ public enum RenditionType: Int, Codable, Hashable, CustomStringConvertible, Case
             return "Color"
         case .svg:
             return "SVG (Vector)"
+        case .namedGradient:
+            return "Named Gradient"
         case .rawData:
             return "Raw Data"
         case .unknown:
