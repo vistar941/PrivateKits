@@ -6,13 +6,13 @@ import Foundation
 
 /// Returns a URL of the sources
 func pathInSources(componentToAppend: String) -> URL {
-    URL(fileURLWithPath: #file)
+    URL(fileURLWithPath: #filePath)
         .deletingLastPathComponent()
         .appendingPathComponent("Sources")
         .appendingPathComponent(componentToAppend)
 }
 
-let sourcesDirectory = URL(fileURLWithPath: #file)
+let sourcesDirectory = URL(fileURLWithPath: #filePath)
     .deletingLastPathComponent()
     .appendingPathComponent("Sources")
 
