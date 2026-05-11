@@ -60,5 +60,6 @@ let package = Package(
         .testTarget(name: "DiskImagesTests", dependencies: ["DiskImagesWrapper"]),
         
         .systemLibrary(name: "CFrameworks", path: nil, pkgConfig: nil, providers: nil)
-    ]
+    ],
+    swiftLanguageModes: [.v5]
 )
