@@ -33,7 +33,7 @@ public class AssetCatalogWrapper {
     
     public func renditions(forCarArchive url: URL) throws -> (CUICatalog, RenditionCollection) {
         let catalog = try CUICatalog(url: url)
-        return (catalog, catalog.__getRenditionCollection(namedGradients: Self.namedGradients(for: url)))
+        return (catalog, catalog.__getRenditionCollection())
     }
     
     public func extract(collection: RenditionCollection, to destinationURL: URL) throws {
@@ -110,145 +110,190 @@ public class AssetCatalogWrapper {
             throw StringError(failedItemsMessage)
         }
     }
-
-    private static func namedGradients(for url: URL) -> [String: RenditionGradient] {
-        #if os(macOS)
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/assetutil")
-        process.arguments = ["--info", url.path]
-
-        let outputPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = Pipe()
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            return [:]
-        }
-
-        guard process.terminationStatus == 0 else {
-            return [:]
-        }
-
-        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        guard let metadata = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
-            return [:]
-        }
-
-        return RenditionGradient.gradients(from: metadata)
-        #else
-        return [:]
-        #endif
-    }
-}
-
-public struct RenditionGradientStop {
-    public let color: CGColor
-    public let location: CGFloat
-}
-
-public struct RenditionGradient {
-    public let startPoint: CGPoint
-    public let endPoint: CGPoint
-    public let stops: [RenditionGradientStop]
-
-    fileprivate static func gradients(from metadata: [[String: Any]]) -> [String: RenditionGradient] {
-        var colorsByName: [String: CGColor] = [:]
-        metadata.forEach { item in
-            guard let name = item["Name"] as? String,
-                  item["AssetType"] as? String == "Color",
-                  let color = color(from: item) else {
-                return
-            }
-
-            colorsByName[name] = color
-        }
-
-        var gradientsByName: [String: RenditionGradient] = [:]
-        metadata.forEach { item in
-            guard let name = item["Name"] as? String,
-                  item["AssetType"] as? String == "Named Gradient",
-                  let colorNames = item["Gradient Colors"] as? [String],
-                  let stopValues = item["Gradient Stops"] as? [Double],
-                  let startStop = item["Gradient Start/Stop"] as? String,
-                  let points = points(from: startStop) else {
-                return
-            }
-
-            let stops = zip(colorNames, stopValues).compactMap { colorName, location -> RenditionGradientStop? in
-                guard let color = colorsByName[colorName] else {
-                    return nil
-                }
-
-                return RenditionGradientStop(color: color, location: CGFloat(location))
-            }
-
-            guard !stops.isEmpty else {
-                return
-            }
-
-            gradientsByName[name] = RenditionGradient(startPoint: points.start, endPoint: points.end, stops: stops)
-        }
-
-        return gradientsByName
-    }
-
-    private static func color(from info: [String: Any]) -> CGColor? {
-        guard let components = info["Color components"] as? [Double],
-              let colorSpace = info["Colorspace"] as? String else {
-            return nil
-        }
-
-        if colorSpace.localizedCaseInsensitiveContains("gray"),
-           components.count >= 2 {
-            return CGColor(gray: CGFloat(components[0]), alpha: CGFloat(components[1]))
-        }
-
-        if components.count >= 4 {
-            return CGColor(
-                srgbRed: CGFloat(components[0]),
-                green: CGFloat(components[1]),
-                blue: CGFloat(components[2]),
-                alpha: CGFloat(components[3])
-            )
-        }
-
-        return nil
-    }
-
-    private static func points(from string: String) -> (start: CGPoint, end: CGPoint)? {
-        let pairs = string
-            .components(separatedBy: "-")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-
-        guard pairs.count == 2,
-              let start = point(from: pairs[0]),
-              let end = point(from: pairs[1]) else {
-            return nil
-        }
-
-        return (start, end)
-    }
-
-    private static func point(from string: String) -> CGPoint? {
-        let components = string
-            .components(separatedBy: ",")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-
-        guard components.count == 2,
-              let x = Double(components[0]),
-              let y = Double(components[1]) else {
-            return nil
-        }
-
-        return CGPoint(x: x, y: y)
-    }
 }
 
 /// Represents a Core UI rendition
 public class Rendition: Hashable {
+
+    public struct GradientStop {
+        public let color: CGColor
+        public let location: CGFloat
+    }
+
+    public struct Gradient {
+        public let startPoint: CGPoint
+        public let endPoint: CGPoint
+        public let stops: [GradientStop]
+
+        fileprivate static func gradient(from lookup: CUINamedLookup, colorsByName: [String: CGColor]) -> Gradient? {
+            let colorNames: [String]
+            let stopValues: [CGFloat]
+            let startPoint: CGPoint
+            let endPoint: CGPoint
+
+            if let gradientRendition = lookup.rendition as? _CUIThemeNamedColorGradientRendition {
+                colorNames = strings(from: gradientRendition.colorNames)
+                stopValues = numbers(from: gradientRendition.colorStops)
+                startPoint = gradientRendition.gradientStartPoint
+                endPoint = gradientRendition.gradientEndPoint
+            } else if let gradientLookup = lookup as? CUINamedGradient {
+                let colors = cgColors(from: gradientLookup.colors)
+                stopValues = numbers(from: gradientLookup.colorStops)
+                startPoint = gradientLookup.gradientStartPoint
+                endPoint = gradientLookup.gradientEndPoint
+
+                let stops = zip(colors, stopValues).map { color, location in
+                    GradientStop(color: color, location: location)
+                }
+
+                guard !stops.isEmpty else {
+                    return nil
+                }
+
+                return Gradient(startPoint: startPoint, endPoint: endPoint, stops: stops)
+            } else {
+                return nil
+            }
+
+            let stops = zip(colorNames, stopValues).compactMap { colorName, location -> GradientStop? in
+                guard let color = colorsByName[colorName] else {
+                    return nil
+                }
+
+                return GradientStop(color: color, location: location)
+            }
+
+            guard !stops.isEmpty else {
+                return nil
+            }
+
+            return Gradient(startPoint: startPoint, endPoint: endPoint, stops: stops)
+        }
+
+        fileprivate static func colorsByName(from lookups: [CUINamedLookup]) -> [String: CGColor] {
+            var colorsByName: [String: CGColor] = [:]
+
+            for lookup in lookups {
+                guard let color = lookup.rendition.cgColor()?.takeUnretainedValue() else {
+                    continue
+                }
+
+                colorsByName[lookup.name] = color
+            }
+
+            return colorsByName
+        }
+
+        private static func strings(from array: [Any]?) -> [String] {
+            array?.compactMap { $0 as? String } ?? []
+        }
+
+        private static func numbers(from array: [Any]?) -> [CGFloat] {
+            array?.compactMap { value -> CGFloat? in
+                if let number = value as? NSNumber {
+                    return CGFloat(truncating: number)
+                }
+
+                if let double = value as? Double {
+                    return CGFloat(double)
+                }
+
+                return nil
+            } ?? []
+        }
+
+        private static func cgColors(from array: [Any]?) -> [CGColor] {
+            array?.compactMap { value in
+                if CFGetTypeID(value as CFTypeRef) == CGColor.typeID {
+                    return (value as! CGColor)
+                }
+
+                #if canImport(UIKit)
+                if let color = value as? UIColor {
+                    return color.cgColor
+                }
+                #elseif canImport(AppKit)
+                if let color = value as? NSColor {
+                    return color.cgColor
+                }
+                #endif
+
+                return nil
+            } ?? []
+        }
+    }
+
+    public struct IconStack {
+        public let size: CGSize
+        public let renderingProperties: [AnyHashable: Any]
+        public let layers: [Layer]
+
+        public enum Layer {
+            case gradient(Gradient)
+            case group(IconLayerGroup)
+            case lookup(name: String, typeName: String)
+        }
+
+        fileprivate static func iconStack(from lookup: CUINamedLookup, colorsByName: [String: CGColor]) -> IconStack? {
+            guard let stack = lookup as? CUINamedIconLayerStack else {
+                return nil
+            }
+
+            return IconStack(
+                size: stack.size,
+                renderingProperties: dictionary(from: stack.renderingProperties),
+                layers: layers(from: stack.layers, colorsByName: colorsByName)
+            )
+        }
+
+        fileprivate static func layers(from array: [Any]?, colorsByName: [String: CGColor]) -> [Layer] {
+            array?.compactMap { layer(from: $0, colorsByName: colorsByName) } ?? []
+        }
+
+        private static func layer(from object: Any, colorsByName: [String: CGColor]) -> Layer? {
+            if let group = object as? CUINamedIconLayerGroup {
+                return .group(IconLayerGroup(group: group, colorsByName: colorsByName))
+            }
+
+            if let gradient = object as? CUINamedGradient,
+               let renditionGradient = Gradient.gradient(from: gradient, colorsByName: colorsByName) {
+                return .gradient(renditionGradient)
+            }
+
+            if let lookup = object as? CUINamedLookup {
+                return .lookup(name: lookup.name, typeName: NSStringFromClass(lookup.classForCoder))
+            }
+
+            return .lookup(name: String(describing: object), typeName: String(describing: Swift.type(of: object)))
+        }
+
+        private static func dictionary(from dictionary: [AnyHashable: Any]?) -> [AnyHashable: Any] {
+            dictionary ?? [:]
+        }
+    }
+
+    public struct IconLayerGroup {
+        public let name: String
+        public let opacity: CGFloat
+        public let blendMode: Int
+        public let blurStrength: CGFloat
+        public let gradientOrColorName: String?
+        public let color: CGColor?
+        public let gradient: Gradient?
+        public let layers: [IconStack.Layer]
+
+        fileprivate init(group: CUINamedIconLayerGroup, colorsByName: [String: CGColor]) {
+            self.name = group.name
+            self.opacity = CGFloat(group.opacity)
+            self.blendMode = Int(group.blendMode)
+            self.blurStrength = CGFloat(group.blurStrength)
+            self.gradientOrColorName = group.gradientOrColorName
+            self.color = group.color
+            let gradient: CUINamedGradient? = group.gradient
+            self.gradient = gradient.flatMap { Gradient.gradient(from: $0, colorsByName: colorsByName) }
+            self.layers = IconStack.layers(from: group.layers, colorsByName: colorsByName)
+        }
+    }
     
     /// the ThemeSubtype constant used to identify renditions
     /// classified as `macCatalyst`
@@ -269,7 +314,8 @@ public class Rendition: Hashable {
     public let namedLookup: CUINamedLookup
     public let type: RenditionType
     public let name: String
-    public let namedGradient: RenditionGradient?
+    public let namedGradient: Gradient?
+    public let iconStack: IconStack?
     
     @available(*, unavailable, message: "Renamed to `representation`")
     public var preview: Representation? { fatalError() }
@@ -305,16 +351,24 @@ public class Rendition: Hashable {
         self.namedLookup = namedLookup
         self.type = .init(namedLookup: namedLookup)
         self.namedGradient = nil
+        self.iconStack = nil
         
         self.name = type == .icon ? cuiRend.name() : namedLookup.name
     }
 
-    init(_ namedLookup: CUINamedLookup, namedGradient: RenditionGradient?) {
+    init(_ namedLookup: CUINamedLookup, namedGradient: Gradient?, iconStack: IconStack?) {
         let rendition = namedLookup.rendition
         self.cuiRend = rendition
         self.namedLookup = namedLookup
         self.namedGradient = namedGradient
-        self.type = namedGradient == nil ? .init(namedLookup: namedLookup) : .namedGradient
+        self.iconStack = iconStack
+        if namedGradient != nil {
+            self.type = .namedGradient
+        } else if iconStack != nil {
+            self.type = .iconStack
+        } else {
+            self.type = .init(namedLookup: namedLookup)
+        }
         
         self.name = type == .icon ? cuiRend.name() : namedLookup.name
     }
@@ -500,6 +554,7 @@ public enum RenditionType: Int, Codable, Hashable, CustomStringConvertible, Case
     case namedGradient
     case rawData
     case unknown
+    case iconStack
     
     public init(namedLookup: CUINamedLookup) {
         let className = NSStringFromClass(namedLookup.rendition.classForCoder)
@@ -526,6 +581,8 @@ public enum RenditionType: Int, Codable, Hashable, CustomStringConvertible, Case
             self = .svg
         case "_CUIThemeMultisizeImageSetRendition":
             self = .multiSizeImageSet
+        case "_CUILayerStackRendition":
+            self = .iconStack
         case "_CUIRawDataRendition":
             self = .rawData
         default:
@@ -551,6 +608,8 @@ public enum RenditionType: Int, Codable, Hashable, CustomStringConvertible, Case
             return "SVG (Vector)"
         case .namedGradient:
             return "Named Gradient"
+        case .iconStack:
+            return "Icon Stack"
         case .rawData:
             return "Raw Data"
         case .unknown:
@@ -574,11 +633,22 @@ public typealias RenditionPreview = Rendition.Representation
 
 public extension CUICatalog {
     
-    internal func __getRenditionCollection(namedGradients: [String: RenditionGradient] = [:]) -> RenditionCollection {
+    internal func __getRenditionCollection() -> RenditionCollection {
         var dict: [RenditionType: [Rendition]] = [:]
+        var lookups: [CUINamedLookup] = []
         
         enumerateNamedLookups { lookup in
-            let rend = Rendition(lookup, namedGradient: namedGradients[lookup.name])
+            lookups.append(lookup)
+        }
+
+        let colorsByName = Rendition.Gradient.colorsByName(from: lookups)
+
+        lookups.forEach { lookup in
+            let rend = Rendition(
+                lookup,
+                namedGradient: Rendition.Gradient.gradient(from: lookup, colorsByName: colorsByName),
+                iconStack: Rendition.IconStack.iconStack(from: lookup, colorsByName: colorsByName)
+            )
             if var existing = dict[rend.type] {
                 existing.append(rend)
                 dict[rend.type] = existing

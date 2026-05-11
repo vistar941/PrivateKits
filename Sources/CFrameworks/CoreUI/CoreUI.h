@@ -13,7 +13,11 @@
 #include "CUICatalog.h"
 #include "CUICommonAssetStorage.h"
 #include "CUINamedLookup.h"
+#include "CUINamedGradient.h"
+#include "CUINamedIconLayerStack.h"
+#include "CUINamedIconLayerGroup.h"
 #include "CUIStructuredThemeStore.h"
+#include "CUIThemeNamedColorGradientRendition.h"
 #include "CSIGenerator.h"
 #include "CSIBitmapWrapper.h"
 
