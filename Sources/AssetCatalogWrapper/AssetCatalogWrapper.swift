@@ -131,11 +131,25 @@ public class Rendition: Hashable {
             let startPoint: CGPoint
             let endPoint: CGPoint
 
-            if let gradientRendition = lookup.rendition as? _CUIThemeNamedColorGradientRendition {
-                colorNames = strings(from: gradientRendition.colorNames)
-                stopValues = numbers(from: gradientRendition.colorStops)
-                startPoint = gradientRendition.gradientStartPoint
-                endPoint = gradientRendition.gradientEndPoint
+            if let rendition = lookup.rendition as AnyObject?,
+               let cls = NSClassFromString("_CUIThemeNamedColorGradientRendition"),
+               rendition.isKind(of: cls) {
+
+                print("Using _CUIThemeNamedColorGradientRendition")
+
+                guard let colorNamesArray = rendition.value(forKey: "colorNames") as? NSArray,
+                      let colorStopsArray = rendition.value(forKey: "colorStops") as? NSArray,
+                      let startValue = rendition.value(forKey: "gradientStartPoint") as? NSValue,
+                      let endValue = rendition.value(forKey: "gradientEndPoint") as? NSValue 
+                else {
+                    return nil
+                }
+
+                colorNames = colorNamesArray.compactMap { $0 as? String }
+                stopValues = colorStopsArray.compactMap { ($0 as? NSNumber).map { CGFloat(truncating: $0) } }
+                startPoint = startValue.pointValue
+                endPoint = endValue.pointValue
+
             } else if let gradientLookup = lookup as? CUINamedGradient {
                 let colors = cgColors(from: gradientLookup.colors)
                 stopValues = numbers(from: gradientLookup.colorStops)
