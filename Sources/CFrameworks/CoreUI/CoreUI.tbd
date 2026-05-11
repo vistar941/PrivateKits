@@ -572,5 +572,9 @@ exports:
                        CUIThemeSchemaPSDRenditionLayer, CUIThemeSchemaRendition,
                        CUIThemeSchemaRenditionGroup, CUIVectorGlyphGraphicVariantOptions,
                        CUIVectorGlyphHierarchicalLayer, CUIVectorGlyphLayer, CUIVectorGlyphMulticolorLayer,
+                       CUINamedGradient,
+                       CUINamedIconLayerGroup,
+                       CUINamedIconLayerStack,
+                       _CUIThemeNamedColorGradientRendition,
                        CUIVectorGlyphMutator, CoreUI ]
 ...
