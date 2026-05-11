@@ -33,7 +33,7 @@ public class AssetCatalogWrapper {
     
     public func renditions(forCarArchive url: URL) throws -> (CUICatalog, RenditionCollection) {
         let catalog = try CUICatalog(url: url)
-        return (catalog, catalog.__getRenditionCollection())
+        return (catalog, catalog.__getRenditionCollection(namedGradients: Self.namedGradients(for: url)))
     }
     
     public func extract(collection: RenditionCollection, to destinationURL: URL) throws {
@@ -110,6 +110,141 @@ public class AssetCatalogWrapper {
             throw StringError(failedItemsMessage)
         }
     }
+
+    private static func namedGradients(for url: URL) -> [String: RenditionGradient] {
+        #if os(macOS)
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/assetutil")
+        process.arguments = ["--info", url.path]
+
+        let outputPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return [:]
+        }
+
+        guard process.terminationStatus == 0 else {
+            return [:]
+        }
+
+        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        guard let metadata = (try? JSONSerialization.jsonObject(with: data)) as? [[String: Any]] else {
+            return [:]
+        }
+
+        return RenditionGradient.gradients(from: metadata)
+        #else
+        return [:]
+        #endif
+    }
+}
+
+public struct RenditionGradientStop {
+    public let color: CGColor
+    public let location: CGFloat
+}
+
+public struct RenditionGradient {
+    public let startPoint: CGPoint
+    public let endPoint: CGPoint
+    public let stops: [RenditionGradientStop]
+
+    fileprivate static func gradients(from metadata: [[String: Any]]) -> [String: RenditionGradient] {
+        var colorsByName: [String: CGColor] = [:]
+        metadata.forEach { item in
+            guard let name = item["Name"] as? String,
+                  item["AssetType"] as? String == "Color",
+                  let color = color(from: item) else {
+                return
+            }
+
+            colorsByName[name] = color
+        }
+
+        var gradientsByName: [String: RenditionGradient] = [:]
+        metadata.forEach { item in
+            guard let name = item["Name"] as? String,
+                  item["AssetType"] as? String == "Named Gradient",
+                  let colorNames = item["Gradient Colors"] as? [String],
+                  let stopValues = item["Gradient Stops"] as? [Double],
+                  let startStop = item["Gradient Start/Stop"] as? String,
+                  let points = points(from: startStop) else {
+                return
+            }
+
+            let stops = zip(colorNames, stopValues).compactMap { colorName, location -> RenditionGradientStop? in
+                guard let color = colorsByName[colorName] else {
+                    return nil
+                }
+
+                return RenditionGradientStop(color: color, location: CGFloat(location))
+            }
+
+            guard !stops.isEmpty else {
+                return
+            }
+
+            gradientsByName[name] = RenditionGradient(startPoint: points.start, endPoint: points.end, stops: stops)
+        }
+
+        return gradientsByName
+    }
+
+    private static func color(from info: [String: Any]) -> CGColor? {
+        guard let components = info["Color components"] as? [Double],
+              let colorSpace = info["Colorspace"] as? String else {
+            return nil
+        }
+
+        if colorSpace.localizedCaseInsensitiveContains("gray"),
+           components.count >= 2 {
+            return CGColor(gray: CGFloat(components[0]), alpha: CGFloat(components[1]))
+        }
+
+        if components.count >= 4 {
+            return CGColor(
+                srgbRed: CGFloat(components[0]),
+                green: CGFloat(components[1]),
+                blue: CGFloat(components[2]),
+                alpha: CGFloat(components[3])
+            )
+        }
+
+        return nil
+    }
+
+    private static func points(from string: String) -> (start: CGPoint, end: CGPoint)? {
+        let pairs = string
+            .components(separatedBy: "-")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+        guard pairs.count == 2,
+              let start = point(from: pairs[0]),
+              let end = point(from: pairs[1]) else {
+            return nil
+        }
+
+        return (start, end)
+    }
+
+    private static func point(from string: String) -> CGPoint? {
+        let components = string
+            .components(separatedBy: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+        guard components.count == 2,
+              let x = Double(components[0]),
+              let y = Double(components[1]) else {
+            return nil
+        }
+
+        return CGPoint(x: x, y: y)
+    }
 }
 
 /// Represents a Core UI rendition
@@ -134,6 +269,7 @@ public class Rendition: Hashable {
     public let namedLookup: CUINamedLookup
     public let type: RenditionType
     public let name: String
+    public let namedGradient: RenditionGradient?
     
     @available(*, unavailable, message: "Renamed to `representation`")
     public var preview: Representation? { fatalError() }
@@ -168,6 +304,17 @@ public class Rendition: Hashable {
         self.cuiRend = rendition
         self.namedLookup = namedLookup
         self.type = .init(namedLookup: namedLookup)
+        self.namedGradient = nil
+        
+        self.name = type == .icon ? cuiRend.name() : namedLookup.name
+    }
+
+    init(_ namedLookup: CUINamedLookup, namedGradient: RenditionGradient?) {
+        let rendition = namedLookup.rendition
+        self.cuiRend = rendition
+        self.namedLookup = namedLookup
+        self.type = .init(namedLookup: namedLookup)
+        self.namedGradient = namedGradient
         
         self.name = type == .icon ? cuiRend.name() : namedLookup.name
     }
@@ -424,11 +571,11 @@ public typealias RenditionPreview = Rendition.Representation
 
 public extension CUICatalog {
     
-    internal func __getRenditionCollection() -> RenditionCollection {
+    internal func __getRenditionCollection(namedGradients: [String: RenditionGradient] = [:]) -> RenditionCollection {
         var dict: [RenditionType: [Rendition]] = [:]
         
         enumerateNamedLookups { lookup in
-            let rend = Rendition(lookup)
+            let rend = Rendition(lookup, namedGradient: namedGradients[lookup.name])
             if var existing = dict[rend.type] {
                 existing.append(rend)
                 dict[rend.type] = existing
