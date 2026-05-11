@@ -575,6 +575,5 @@ exports:
                        CUINamedGradient,
                        CUINamedIconLayerGroup,
                        CUINamedIconLayerStack,
-                       _CUIThemeNamedColorGradientRendition,
                        CUIVectorGlyphMutator, CoreUI ]
 ...
